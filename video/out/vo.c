@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <math.h>
+#include <dispatch/dispatch.h>
 
 #include "mpv_talloc.h"
 
@@ -975,6 +976,12 @@ static bool render_frame(struct vo *vo)
             vsync.last_queue_display_time = mp_time_us();
 
         stats_time_end(in->stats, "video-flip");
+
+        double xpts = frame->frames[0]->x_orig_pts * 1000;
+        uint64_t xnow = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1000;
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0), ^{
+            printf("%f %'llu end video-flip\n", xpts, (long long)xnow);
+        });
 
         pthread_mutex_lock(&in->lock);
         in->dropped_frame = prev_drop_count < vo->in->drop_count;

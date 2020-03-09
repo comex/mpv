@@ -828,6 +828,9 @@ void mp_image_params_guess_csp(struct mp_image_params *params)
 struct mp_image *mp_image_from_av_frame(struct AVFrame *src)
 {
     struct mp_image *dst = &(struct mp_image){0};
+    dst->pts = -42;
+    dst->x_orig_pts = -42;
+    //printf("%p\n", &dst->pts);
     AVFrameSideData *sd;
 
     for (int p = 0; p < MP_MAX_PLANES; p++)

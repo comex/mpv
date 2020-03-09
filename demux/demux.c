@@ -30,6 +30,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
+#include <dispatch/dispatch.h>
+
 #include "cache.h"
 #include "config.h"
 #include "options/m_config.h"
@@ -2005,6 +2007,12 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
         return;
     }
 
+    double xpts = dp->pts;
+        uint64_t xnow = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1000;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0), ^{
+        printf("%f %'llu add_packet\n", xpts, (long long)xnow);
+    });
+
     assert(dp->stream == stream->index);
     assert(!dp->next);
 
@@ -2747,6 +2755,7 @@ static int dequeue_packet(struct demux_stream *ds, double min_pts,
 
     pkt->pts = MP_ADD_PTS(pkt->pts, in->ts_offset);
     pkt->dts = MP_ADD_PTS(pkt->dts, in->ts_offset);
+    pkt->x_ts_offset = in->ts_offset;
 
     if (pkt->segmented) {
         pkt->start = MP_ADD_PTS(pkt->start, in->ts_offset);

@@ -180,6 +180,8 @@ typedef struct lavc_ctx {
     bool intra_only;
     int framedrop_flags;
 
+    double x_last_seen_ts_offset;
+
     bool hw_probing;
     struct demux_packet **sent_packets;
     int num_sent_packets;
@@ -997,6 +999,8 @@ static int send_packet(struct mp_filter *vd, struct demux_packet *pkt)
     vd_ffmpeg_ctx *ctx = vd->priv;
     AVCodecContext *avctx = ctx->avctx;
 
+    ctx->x_last_seen_ts_offset = pkt->x_ts_offset;
+
     if (ctx->num_requeue_packets && ctx->requeue_packets[0] != pkt)
         return AVERROR(EAGAIN); // cannot consume the packet
 
@@ -1096,6 +1100,7 @@ static int decode_frame(struct mp_filter *vd)
 
     mpi->pts = mp_pts_from_av(ctx->pic->pts, &ctx->codec_timebase);
     mpi->dts = mp_pts_from_av(ctx->pic->pkt_dts, &ctx->codec_timebase);
+    mpi->x_orig_pts = mpi->pts - ctx->x_last_seen_ts_offset;
 
     mpi->pkt_duration =
         mp_pts_from_av(ctx->pic->pkt_duration, &ctx->codec_timebase);

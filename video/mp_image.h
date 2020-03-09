@@ -86,6 +86,8 @@ typedef struct mp_image {
     int pict_type; // 0->unknown, 1->I, 2->P, 3->B
     int fields;
 
+    double x_orig_pts;
+
     /* only inside filter chain */
     double pts;
     /* only after decoder */
