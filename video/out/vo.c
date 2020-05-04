@@ -977,11 +977,13 @@ static bool render_frame(struct vo *vo)
 
         stats_time_end(in->stats, "video-flip");
 
-        double xpts = frame->frames[0]->x_orig_pts * 1000;
-        uint64_t xnow = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1000;
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0), ^{
-            printf("%f %'llu end video-flip\n", xpts, (long long)xnow);
-        });
+        if (enable_timing_spam()) {
+            double xpts = frame->frames[0]->x_orig_pts;
+            uint64_t xnow = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1000;
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0), ^{
+                printf("%f %'llu end video-flip\n", xpts, (long long)xnow);
+            });
+        }
 
         pthread_mutex_lock(&in->lock);
         in->dropped_frame = prev_drop_count < vo->in->drop_count;

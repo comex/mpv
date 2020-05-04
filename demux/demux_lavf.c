@@ -1341,7 +1341,7 @@ static void demux_close_lavf(demuxer_t *demuxer)
 
 const demuxer_desc_t demuxer_desc_lavf = {
     .name = "lavf",
-    .desc = "libavformat",
+    .desc = "libavformat!?",
     .read_packet = demux_lavf_read_packet,
     .open = demux_open_lavf,
     .close = demux_close_lavf,

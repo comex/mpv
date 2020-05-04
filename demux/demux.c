@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <zlib.h>
 
 #include <math.h>
 
@@ -1999,6 +2000,15 @@ static void record_packet(struct demux_internal *in, struct demux_packet *dp)
         write_dump_packet(in, dp);
 }
 
+int enable_timing_spam(void) {
+    static int enable;
+    static dispatch_once_t pred;
+    dispatch_once(&pred, ^{
+        enable = !!getenv("TIMING_SPAM_MPV");
+    });
+    return enable;
+}
+
 static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
 {
     struct demux_stream *ds = stream ? stream->ds : NULL;
@@ -2007,11 +2017,15 @@ static void add_packet_locked(struct sh_stream *stream, demux_packet_t *dp)
         return;
     }
 
-    double xpts = dp->pts;
+    if (enable_timing_spam()) {
+        double xpts = dp->pts;
         uint64_t xnow = clock_gettime_nsec_np(CLOCK_MONOTONIC_RAW) / 1000;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0), ^{
-        printf("%f %'llu add_packet\n", xpts, (long long)xnow);
-    });
+        size_t len = dp->len;
+        uint32_t crc = dp->is_cached ? 0 : crc32_z(0, dp->buffer, dp->len);
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,0), ^{
+            printf("%f %'llu add_packet [%08x len=%zu]\n", xpts, (long long)xnow, crc, len);
+        });
+    }
 
     assert(dp->stream == stream->index);
     assert(!dp->next);
