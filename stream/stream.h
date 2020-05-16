@@ -130,6 +130,8 @@ typedef struct stream {
     int64_t (*get_size)(struct stream *s);
     // Control
     int (*control)(struct stream *s, int cmd, void *arg);
+    // Property
+    int (*property)(struct stream *s, const char *name, int action, void *arg);
     // Close
     void (*close)(struct stream *s);
 

@@ -3377,6 +3377,52 @@ static int mp_property_script_props(void *ctx, struct m_property *prop,
     return M_PROPERTY_NOT_IMPLEMENTED;
 }
 
+#if 0
+// no.
+// track/N/[audio|video|sub]/prop
+static int mp_property_track(void *ctx, struct m_property *prop,
+                             int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    //struct command_ctx *cmd = mpctx->command_ctx;
+    if (action != MP_PROPERTY_KEY_ACTION)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    struct m_property_action_arg *ka = arg;
+    const char *key = ka->key;
+    const char *slash_after_tracknum = strchr(key, '/');
+    if (!slash_after_tracknum)
+        return M_PROPERTY_UNKNOWN;
+
+    char *end = slash_after_tracknum;
+    long int tracknum = strtol(key, &end, 10);
+    if (end != slash_after_tracknum || tracknum < 0 || tracknum >= MAX_PTRACKS)
+        return M_PROPERTY_UNKNOWN;
+
+    const char *stream_type = slash_after_tracknum + 1;
+    const char *slash_after_stream_type = strchr(stream_type, '/');
+    if (!slash_after_stream_type)
+        return M_PROPERTY_UNKNOWN;
+
+    enum stream_type stream_type_val;
+    if (!strncmp(stream_type, "audio/", sizeof("audio/") - 1))
+        stream_type_val = STREAM_AUDIO;
+    else if (!strncmp(stream_type, "video/", sizeof("video/") - 1))
+        stream_type_val = STREAM_VIDEO;
+    else if (!strncmp(stream_type, "sub/", sizeof("sub/") - 1))
+        stream_type_val = STREAM_SUB;
+    else
+        return M_PROPERTY_UNKNOWN;
+
+    struct track *track = mpctx->current_ctx[tracknum][stream_type_val];
+    if (!track)
+        return M_PROPERTY_UNAVAILABLE;
+    const char *stream_prop = slash_after_stream_type + 1;
+
+
+
+}
+#endif
+
 // Redirect a property name to another
 #define M_PROPERTY_ALIAS(name, real_property) \
     {(name), mp_property_alias, .priv = (real_property)}
@@ -3443,6 +3489,8 @@ static const struct m_property mp_properties_base[] = {
     {"seekable", mp_property_seekable},
     {"partially-seekable", mp_property_partially_seekable},
     {"idle-active", mp_property_idle},
+    //{"track", mp_property_track},
+    {"stream", mp_property_stream},
 
     {"chapter-list", mp_property_list_chapters},
     {"track-list", property_list_tracks},
