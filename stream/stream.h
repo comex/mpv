@@ -226,6 +226,7 @@ struct bstr stream_read_file(const char *filename, void *talloc_ctx,
                              struct mpv_global *global, int max_size);
 
 int stream_control(stream_t *s, int cmd, void *arg);
+int stream_property(struct stream *s, const char *name, int action, void *arg);
 void free_stream(stream_t *s);
 
 struct stream_open_args {

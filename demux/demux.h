@@ -324,6 +324,8 @@ struct demux_chapter *demux_copy_chapter_data(struct demux_chapter *c, int num);
 bool demux_matroska_uid_cmp(struct matroska_segment_uid *a,
                             struct matroska_segment_uid *b);
 
+int demux_stream_property(struct demuxer *demuxer, const char *name, int action, void *arg);
+
 const char *stream_type_name(enum stream_type type);
 
 #endif /* MPLAYER_DEMUXER_H */

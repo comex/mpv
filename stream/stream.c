@@ -34,6 +34,7 @@
 #include "misc/thread_tools.h"
 #include "common/msg.h"
 #include "options/m_config.h"
+#include "options/m_property.h"
 #include "options/options.h"
 #include "options/path.h"
 #include "osdep/timer.h"
@@ -747,6 +748,11 @@ bool stream_seek_skip(stream_t *s, int64_t pos)
 int stream_control(stream_t *s, int cmd, void *arg)
 {
     return s->control ? s->control(s, cmd, arg) : STREAM_UNSUPPORTED;
+}
+
+int stream_property(struct stream *s, const char *name, int action, void *arg)
+{
+    return s->property ? s->property(s, name, action, arg) : M_PROPERTY_UNAVAILABLE;
 }
 
 // Return the current size of the stream, or a negative value if unknown.

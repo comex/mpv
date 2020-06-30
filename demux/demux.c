@@ -37,6 +37,7 @@
 #include "config.h"
 #include "options/m_config.h"
 #include "options/m_option.h"
+#include "options/m_property.h"
 #include "mpv_talloc.h"
 #include "common/av_common.h"
 #include "common/msg.h"
@@ -4516,6 +4517,22 @@ struct demux_chapter *demux_copy_chapter_data(struct demux_chapter *c, int num)
         new[n].metadata = mp_tags_dup(new, new[n].metadata);
     }
     return new;
+}
+
+int demux_stream_property(struct demuxer *demuxer, const char *name, int action, void *arg)
+{
+
+    struct demux_internal *in = demuxer->in;
+    assert(demuxer == in->d_user);
+
+    pthread_mutex_lock(&in->lock);
+
+    int ret = !demuxer->stream ? M_PROPERTY_UNAVAILABLE
+        : stream_property(demuxer->stream, name, action, arg);
+
+    pthread_mutex_unlock(&in->lock);
+
+    return ret;
 }
 
 static void visit_tags(void *ctx, void (*visit)(void *ctx, void *ta, char **s),

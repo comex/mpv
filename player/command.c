@@ -3423,6 +3423,18 @@ static int mp_property_track(void *ctx, struct m_property *prop,
 }
 #endif
 
+static int mp_property_stream(void *ctx, struct m_property *prop,
+                              int action, void *arg)
+{
+    MPContext *mpctx = ctx;
+    if (!mpctx->demuxer)
+        return M_PROPERTY_UNAVAILABLE;
+    if (action != M_PROPERTY_KEY_ACTION)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    struct m_property_action_arg *ka = arg;
+    return demux_stream_property(mpctx->demuxer, ka->key, ka->action, ka->arg);
+}
+
 // Redirect a property name to another
 #define M_PROPERTY_ALIAS(name, real_property) \
     {(name), mp_property_alias, .priv = (real_property)}

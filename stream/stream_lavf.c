@@ -28,6 +28,7 @@
 #include "stream.h"
 #include "options/m_config.h"
 #include "options/m_option.h"
+#include "options/m_property.h"
 
 #include "cookies.h"
 
@@ -167,6 +168,52 @@ static int control(stream_t *s, int cmd, void *arg)
     }
     }
     return STREAM_UNSUPPORTED;
+}
+
+static const struct m_option_type *av_option_type_to_ours(enum AVOptionType ty) {
+    static const struct m_option_type *map[] = {
+        [AV_OPT_TYPE_FLAGS] = &m_option_type_flag,
+        [AV_OPT_TYPE_INT] = &m_option_type_int,
+        [AV_OPT_TYPE_INT64] = &m_option_type_int64,
+        [AV_OPT_TYPE_UINT64] = &m_option_type_int64,
+        [AV_OPT_TYPE_DOUBLE] = &m_option_type_double,
+        [AV_OPT_TYPE_FLOAT] = &m_option_type_float,
+        [AV_OPT_TYPE_STRING] = &m_option_type_string,
+        [AV_OPT_TYPE_COLOR] = &m_option_type_color,
+        [AV_OPT_TYPE_BOOL] = &m_option_type_bool,
+    };
+    return ty > AV_OPT_TYPE_BOOL ? NULL : map[ty];
+}
+
+static int property(stream_t *s, const char *name, int action, void *arg)
+{
+    AVIOContext *avio = s->priv;
+    void *target;
+    const AVOption *avopt = av_opt_find2(avio, name, NULL, 0, AV_OPT_SEARCH_CHILDREN, &target);
+    if (!avopt)
+        return M_PROPERTY_UNKNOWN;
+    const struct m_option_type *otype = av_option_type_to_ours(avopt->type);
+    if (!otype)
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    switch (action) {
+    case M_PROPERTY_GET_TYPE: {
+        *(struct m_option *)arg = (struct m_option){.type = otype};
+        return M_PROPERTY_OK;
+    }
+    case M_PROPERTY_GET: {
+        const void *ptr = (char *)target + avopt->offset;
+        switch (avopt->type) {
+        case AV_OPT_TYPE_BOOL:
+            *(bool *)arg = *(int *)ptr;
+            return M_PROPERTY_OK;
+        default:
+            memcpy(arg, ptr, otype->size);
+            return M_PROPERTY_OK;
+        }
+    }
+    default:
+        return M_PROPERTY_NOT_IMPLEMENTED;
+    }
 }
 
 static int interrupt_cb(void *ctx)
@@ -335,6 +382,7 @@ static int open_f(stream_t *stream)
     stream->write_buffer = write_buffer;
     stream->get_size = get_size;
     stream->control = control;
+    stream->property = property;
     stream->close = close_f;
     // enable cache (should be avoided for files, but no way to detect this)
     stream->streaming = true;
