@@ -67,9 +67,10 @@ struct mp_repack {
 
     // Fringe RGB/YUV.
     uint8_t comp_size;
-    uint8_t *comp_map;
+    uint8_t comp_map[6];
     uint8_t comp_shifts[3];
     uint8_t *comp_lut;
+    void (*repack_fringe_yuv)(void *dst, void *src[], int w, uint8_t *c);
 
     // F32 repacking.
     int f32_comp_size;
@@ -132,8 +133,8 @@ static void copy_plane(struct mp_image *dst, int dst_x, int dst_y,
     assert(dst->fmt.bpp[p] == src->fmt.bpp[p]);
 
     for (int y = 0; y < h; y++) {
-        void *pd = mp_image_pixel_ptr(dst, p, dst_x, dst_y + y);
-        void *ps = mp_image_pixel_ptr(src, p, src_x, src_y + y);
+        void *pd = mp_image_pixel_ptr_ny(dst, p, dst_x, dst_y + y);
+        void *ps = mp_image_pixel_ptr_ny(src, p, src_x, src_y + y);
         memcpy(pd, ps, size);
     }
 }
@@ -147,17 +148,17 @@ static void swap_endian(struct mp_image *dst, int dst_x, int dst_y,
 
     for (int p = 0; p < dst->fmt.num_planes; p++) {
         int xs = dst->fmt.xs[p];
-        int bpp = dst->fmt.bytes[p];
+        int bpp = dst->fmt.bpp[p] / 8;
         int words_per_pixel = bpp / endian_size;
         int num_words = ((w + (1 << xs) - 1) >> xs) * words_per_pixel;
         // Number of lines on this plane.
         int h = (1 << dst->fmt.chroma_ys) - (1 << dst->fmt.ys[p]) + 1;
 
-        assert(src->fmt.bytes[p] == bpp);
+        assert(src->fmt.bpp[p] == bpp * 8);
 
         for (int y = 0; y < h; y++) {
-            void *s = mp_image_pixel_ptr(src, p, src_x, src_y + y);
-            void *d = mp_image_pixel_ptr(dst, p, dst_x, dst_y + y);
+            void *s = mp_image_pixel_ptr_ny(src, p, src_x, src_y + y);
+            void *d = mp_image_pixel_ptr_ny(dst, p, dst_x, dst_y + y);
             switch (endian_size) {
             case 2:
                 for (int x = 0; x < num_words; x++)
@@ -333,41 +334,41 @@ static void packed_repack(struct mp_repack *rp,
 // Tries to set a packer/unpacker for component-wise byte aligned formats.
 static void setup_packed_packer(struct mp_repack *rp)
 {
-    struct mp_regular_imgfmt desc;
-    if (!mp_get_regular_imgfmt(&desc, rp->imgfmt_a))
+    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(rp->imgfmt_a);
+    if (!(desc.flags & MP_IMGFLAG_HAS_COMPS) ||
+        !(desc.flags & MP_IMGFLAG_TYPE_UINT) ||
+        !(desc.flags & MP_IMGFLAG_NE) ||
+        desc.num_planes != 1)
         return;
-
-    if (desc.num_planes != 1 || desc.planes[0].num_components < 2)
-        return;
-    struct mp_regular_imgfmt_plane *p = &desc.planes[0];
 
     int num_real_components = 0;
-    bool has_alpha = false;
-    for (int n = 0; n < p->num_components; n++) {
-        if (p->components[n]) {
-            has_alpha |= p->components[n] == 4;
-            num_real_components += 1;
-        } else {
-            // padding must be in MSB or LSB
-            if (n != 0 && n != p->num_components - 1)
-                return;
-        }
+    int components[4] = {0};
+    for (int n = 0; n < MP_NUM_COMPONENTS; n++) {
+        if (!desc.comps[n].size)
+            continue;
+        if (desc.comps[n].size != desc.comps[0].size ||
+            desc.comps[n].pad != desc.comps[0].pad ||
+            desc.comps[n].offset % desc.comps[0].size)
+            return;
+        int item = desc.comps[n].offset / desc.comps[0].size;
+        if (item >= 4)
+            return;
+        components[item] = n + 1;
+        num_real_components++;
     }
 
-    int depth = desc.component_size * 8 + MPMIN(0, desc.component_pad);
+    int depth = desc.comps[0].size + MPMIN(0, desc.comps[0].pad);
 
     static const int reorder_gbrp[] = {0, 3, 1, 2, 4};
     static const int reorder_yuv[] = {0, 1, 2, 3, 4};
     int planar_fmt = 0;
     const int *reorder = NULL;
-    if (desc.forced_csp) {
-        if (desc.forced_csp != MP_CSP_RGB && desc.forced_csp != MP_CSP_XYZ)
-            return;
-        planar_fmt = find_gbrp_format(depth, num_real_components);
-        reorder = reorder_gbrp;
-    } else {
+    if (desc.flags & MP_IMGFLAG_COLOR_YUV) {
         planar_fmt = find_yuv_format(depth, num_real_components);
         reorder = reorder_yuv;
+    } else {
+        planar_fmt = find_gbrp_format(depth, num_real_components);
+        reorder = reorder_gbrp;
     }
     if (!planar_fmt)
         return;
@@ -378,12 +379,12 @@ static void setup_packed_packer(struct mp_repack *rp)
         // The following may assume little endian (because some repack backends
         // use word access, while the metadata here uses byte access).
 
-        int prepad = p->components[0] ? 0 : 8;
-        int first_comp = p->components[0] ? 0 : 1;
+        int prepad = components[0] ? 0 : 8;
+        int first_comp = components[0] ? 0 : 1;
         void (*repack_cb)(void *pa, void *pb[], int w) =
             rp->pack ? pa->pa_scanline : pa->un_scanline;
 
-        if (pa->packed_width != desc.component_size * p->num_components * 8 ||
+        if (pa->packed_width != desc.bpp[0] ||
             pa->component_width != depth ||
             pa->num_components != num_real_components ||
             pa->prepadding != prepad ||
@@ -396,43 +397,12 @@ static void setup_packed_packer(struct mp_repack *rp)
         for (int n = 0; n < num_real_components; n++) {
             // Determine permutation that maps component order between the two
             // formats, with has_alpha special case (see above).
-            int c = reorder[p->components[first_comp + n]];
+            int c = reorder[components[first_comp + n]];
             rp->components[n] = c == 4 ? num_real_components - 1 : c - 1;
         }
         return;
     }
 }
-
-struct fringe_rgb_repacker {
-    // To avoid making a mess of IMGFMT_*, we use av formats directly.
-    enum AVPixelFormat avfmt;
-    // If true, use BGR instead of RGB.
-    //  False:  LSB - R - G - B - pad - MSB
-    //  True:   LSB - B - G - R - pad - MSB
-    bool rev_order;
-    // Size in bit for each component, strictly from LSB to MSB.
-    int bits[3];
-    bool be;
-};
-
-static const struct fringe_rgb_repacker fringe_rgb_repackers[] = {
-    {AV_PIX_FMT_BGR4_BYTE,  false,  {1, 2, 1}},
-    {AV_PIX_FMT_RGB4_BYTE,  true,   {1, 2, 1}},
-    {AV_PIX_FMT_BGR8,       false,  {3, 3, 2}},
-    {AV_PIX_FMT_RGB8,       true,   {2, 3, 3}}, // pixdesc desc. and doc. bug?
-    {AV_PIX_FMT_RGB444LE,   true,   {4, 4, 4}},
-    {AV_PIX_FMT_RGB444BE,   true,   {4, 4, 4}, .be = true},
-    {AV_PIX_FMT_BGR444LE,   false,  {4, 4, 4}},
-    {AV_PIX_FMT_BGR444BE,   false,  {4, 4, 4}, .be = true},
-    {AV_PIX_FMT_BGR565LE,   false,  {5, 6, 5}},
-    {AV_PIX_FMT_BGR565BE,   false,  {5, 6, 5}, .be = true},
-    {AV_PIX_FMT_RGB565LE,   true,   {5, 6, 5}},
-    {AV_PIX_FMT_RGB565BE,   true,   {5, 6, 5}, .be = true},
-    {AV_PIX_FMT_BGR555LE,   false,  {5, 5, 5}},
-    {AV_PIX_FMT_BGR555BE,   false,  {5, 5, 5}, .be = true},
-    {AV_PIX_FMT_RGB555LE,   true,   {5, 5, 5}},
-    {AV_PIX_FMT_RGB555BE,   true,   {5, 5, 5}, .be = true},
-};
 
 #define PA_SHIFT_LUT8(name, packed_t)                                       \
     static void name(void *dst, void *src[], int w, uint8_t *lut,           \
@@ -489,25 +459,26 @@ static void fringe_rgb_repack(struct mp_repack *rp,
 
 static void setup_fringe_rgb_packer(struct mp_repack *rp)
 {
-    enum AVPixelFormat avfmt = imgfmt2pixfmt(rp->imgfmt_a);
-
-    const struct fringe_rgb_repacker *fmt = NULL;
-    for (int n = 0; n < MP_ARRAY_SIZE(fringe_rgb_repackers); n++) {
-        if (fringe_rgb_repackers[n].avfmt == avfmt) {
-            fmt = &fringe_rgb_repackers[n];
-            break;
-        }
-    }
-
-    if (!fmt)
+    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(rp->imgfmt_a);
+    if (!(desc.flags & MP_IMGFLAG_HAS_COMPS))
         return;
 
-    int depth = fmt->bits[0];
+    if (desc.bpp[0] > 16 || (desc.bpp[0] % 8u) ||
+        mp_imgfmt_get_forced_csp(rp->imgfmt_a) != MP_CSP_RGB ||
+        desc.num_planes != 1 || desc.comps[3].size)
+        return;
+
+    int depth = desc.comps[0].size;
     for (int n = 0; n < 3; n++) {
+        struct mp_imgfmt_comp_desc *c = &desc.comps[n];
+
+        if (c->size < 1 || c->size > 8 || c->pad)
+            return;
+
         if (rp->flags & REPACK_CREATE_ROUND_DOWN) {
-            depth = MPMIN(depth, fmt->bits[n]);
+            depth = MPMIN(depth, c->size);
         } else {
-            depth = MPMAX(depth, fmt->bits[n]);
+            depth = MPMAX(depth, c->size);
         }
     }
     if (rp->flags & REPACK_CREATE_EXPAND_8BIT)
@@ -518,15 +489,12 @@ static void setup_fringe_rgb_packer(struct mp_repack *rp)
         return;
     rp->comp_lut = talloc_array(rp, uint8_t, 256 * 3);
     rp->repack = fringe_rgb_repack;
-    static const int c_order_rgb[] = {3, 1, 2};
-    static const int c_order_bgr[] = {2, 1, 3};
     for (int n = 0; n < 3; n++)
-        rp->components[n] = (fmt->rev_order ? c_order_bgr : c_order_rgb)[n] - 1;
+        rp->components[n] = ((int[]){3, 1, 2})[n] - 1;
 
-    int bitpos = 0;
     for (int n = 0; n < 3; n++) {
-        int bits = fmt->bits[n];
-        rp->comp_shifts[n] = bitpos;
+        int bits = desc.comps[n].size;
+        rp->comp_shifts[n] = desc.comps[n].offset;
         if (rp->comp_lut) {
             uint8_t *lut = rp->comp_lut + 256 * n;
             uint8_t zmax = (1 << depth) - 1;
@@ -539,14 +507,13 @@ static void setup_fringe_rgb_packer(struct mp_repack *rp)
                 }
             }
         }
-        bitpos += bits;
     }
 
-    rp->comp_size = (bitpos + 7) / 8;
+    rp->comp_size = (desc.bpp[0] + 7) / 8;
     assert(rp->comp_size == 1 || rp->comp_size == 2);
 
-    if (fmt->be) {
-        assert(rp->comp_size == 2);
+    if (desc.endian_shift) {
+        assert(rp->comp_size == 2 && (1 << desc.endian_shift) == 2);
         rp->endian_size = 2;
     }
 }
@@ -598,19 +565,7 @@ static void bitmap_repack(struct mp_repack *rp,
 
 static void setup_misc_packer(struct mp_repack *rp)
 {
-    // Although it's in regular_repackers[], the generic mpv imgfmt metadata
-    // can't handle it yet.
-    if (rp->imgfmt_a == IMGFMT_RGB30) {
-        int planar_fmt = find_gbrp_format(10, 3);
-        if (!planar_fmt)
-            return;
-        rp->imgfmt_b = planar_fmt;
-        rp->repack = packed_repack;
-        rp->packed_repack_scanline = rp->pack ? pa_ccc10z2 : un_ccc10x2;
-        static int c_order[] = {2, 1, 3};
-        for (int n = 0; n < 3; n++)
-            rp->components[n] = c_order[n] - 1;
-    } else if (rp->imgfmt_a == IMGFMT_PAL8 && !rp->pack) {
+    if (rp->imgfmt_a == IMGFMT_PAL8 && !rp->pack) {
         int grap_fmt = find_gbrp_format(8, 4);
         if (!grap_fmt)
             return;
@@ -637,33 +592,13 @@ static void setup_misc_packer(struct mp_repack *rp)
     }
 }
 
-struct fringe_yuv422_repacker {
-    // To avoid making a mess of IMGFMT_*, we use av formats directly.
-    enum AVPixelFormat avfmt;
-    // In bits (depth/8 rounded up gives byte size)
-    int8_t depth;
-    // Word index of each sample: {y0, y1, cb, cr}
-    uint8_t comp[4];
-    bool be;
-};
-
-static const struct fringe_yuv422_repacker fringe_yuv422_repackers[] = {
-    {AV_PIX_FMT_YUYV422,  8, {0, 2, 1, 3}},
-    {AV_PIX_FMT_UYVY422,  8, {1, 3, 0, 2}},
-    {AV_PIX_FMT_YVYU422,  8, {0, 2, 3, 1}},
-#ifdef AV_PIX_FMT_Y210
-    {AV_PIX_FMT_Y210LE,  10, {0, 2, 1, 3}},
-    {AV_PIX_FMT_Y210BE,  10, {0, 2, 1, 3}, .be = true},
-#endif
-};
-
 #define PA_P422(name, comp_t)                                               \
     static void name(void *dst, void *src[], int w, uint8_t *c) {           \
         for (int x = 0; x < w; x += 2) {                                    \
             ((comp_t *)dst)[x * 2 + c[0]] = ((comp_t *)src[0])[x + 0];      \
             ((comp_t *)dst)[x * 2 + c[1]] = ((comp_t *)src[0])[x + 1];      \
-            ((comp_t *)dst)[x * 2 + c[2]] = ((comp_t *)src[1])[x >> 1];     \
-            ((comp_t *)dst)[x * 2 + c[3]] = ((comp_t *)src[2])[x >> 1];     \
+            ((comp_t *)dst)[x * 2 + c[4]] = ((comp_t *)src[1])[x >> 1];     \
+            ((comp_t *)dst)[x * 2 + c[5]] = ((comp_t *)src[2])[x >> 1];     \
         }                                                                   \
     }
 
@@ -673,8 +608,8 @@ static const struct fringe_yuv422_repacker fringe_yuv422_repackers[] = {
         for (int x = 0; x < w; x += 2) {                                    \
             ((comp_t *)dst[0])[x + 0]  = ((comp_t *)src)[x * 2 + c[0]];     \
             ((comp_t *)dst[0])[x + 1]  = ((comp_t *)src)[x * 2 + c[1]];     \
-            ((comp_t *)dst[1])[x >> 1] = ((comp_t *)src)[x * 2 + c[2]];     \
-            ((comp_t *)dst[2])[x >> 1] = ((comp_t *)src)[x * 2 + c[3]];     \
+            ((comp_t *)dst[1])[x >> 1] = ((comp_t *)src)[x * 2 + c[4]];     \
+            ((comp_t *)dst[2])[x >> 1] = ((comp_t *)src)[x * 2 + c[5]];     \
         }                                                                   \
     }
 
@@ -683,9 +618,34 @@ PA_P422(pa_p422_16, uint16_t)
 UN_P422(un_p422_8,  uint8_t)
 UN_P422(un_p422_16, uint16_t)
 
-static void fringe_yuv422_repack(struct mp_repack *rp,
-                                 struct mp_image *a, int a_x, int a_y,
-                                 struct mp_image *b, int b_x, int b_y, int w)
+static void pa_p411_8(void *dst, void *src[], int w, uint8_t *c)
+{
+    for (int x = 0; x < w; x += 4) {
+        ((uint8_t *)dst)[x / 4 * 6 + c[0]] = ((uint8_t *)src[0])[x + 0];
+        ((uint8_t *)dst)[x / 4 * 6 + c[1]] = ((uint8_t *)src[0])[x + 1];
+        ((uint8_t *)dst)[x / 4 * 6 + c[2]] = ((uint8_t *)src[0])[x + 2];
+        ((uint8_t *)dst)[x / 4 * 6 + c[3]] = ((uint8_t *)src[0])[x + 3];
+        ((uint8_t *)dst)[x / 4 * 6 + c[4]] = ((uint8_t *)src[1])[x >> 2];
+        ((uint8_t *)dst)[x / 4 * 6 + c[5]] = ((uint8_t *)src[2])[x >> 2];
+    }
+}
+
+
+static void un_p411_8(void *src, void *dst[], int w, uint8_t *c)
+{
+    for (int x = 0; x < w; x += 4) {
+        ((uint8_t *)dst[0])[x + 0]  = ((uint8_t *)src)[x / 4 * 6 + c[0]];
+        ((uint8_t *)dst[0])[x + 1]  = ((uint8_t *)src)[x / 4 * 6 + c[1]];
+        ((uint8_t *)dst[0])[x + 2]  = ((uint8_t *)src)[x / 4 * 6 + c[2]];
+        ((uint8_t *)dst[0])[x + 3]  = ((uint8_t *)src)[x / 4 * 6 + c[3]];
+        ((uint8_t *)dst[1])[x >> 2] = ((uint8_t *)src)[x / 4 * 6 + c[4]];
+        ((uint8_t *)dst[2])[x >> 2] = ((uint8_t *)src)[x / 4 * 6 + c[5]];
+    }
+}
+
+static void fringe_yuv_repack(struct mp_repack *rp,
+                              struct mp_image *a, int a_x, int a_y,
+                              struct mp_image *b, int b_x, int b_y, int w)
 {
     void *pa = mp_image_pixel_ptr(a, 0, a_x, a_y);
 
@@ -693,51 +653,65 @@ static void fringe_yuv422_repack(struct mp_repack *rp,
     for (int p = 0; p < b->num_planes; p++)
         pb[p] = mp_image_pixel_ptr(b, p, b_x, b_y);
 
-    assert(rp->comp_size == 1 || rp->comp_size == 2);
-
-    void (*repack)(void *a, void *b[], int w, uint8_t *c) = NULL;
-    if (rp->pack) {
-        repack = rp->comp_size == 1 ? pa_p422_8 : pa_p422_16;
-    } else {
-        repack = rp->comp_size == 1 ? un_p422_8 : un_p422_16;
-    }
-    repack(pa, pb, w, rp->comp_map);
+    rp->repack_fringe_yuv(pa, pb, w, rp->comp_map);
 }
 
-static void setup_fringe_yuv422_packer(struct mp_repack *rp)
+static void setup_fringe_yuv_packer(struct mp_repack *rp)
 {
-    enum AVPixelFormat avfmt = imgfmt2pixfmt(rp->imgfmt_a);
-
-    const struct fringe_yuv422_repacker *fmt = NULL;
-    for (int n = 0; n < MP_ARRAY_SIZE(fringe_yuv422_repackers); n++) {
-        if (fringe_yuv422_repackers[n].avfmt == avfmt) {
-            fmt = &fringe_yuv422_repackers[n];
-            break;
-        }
-    }
-
-    if (!fmt)
+    struct mp_imgfmt_desc desc = mp_imgfmt_get_desc(rp->imgfmt_a);
+    if (!(desc.flags & MP_IMGFLAG_PACKED_SS_YUV) ||
+        mp_imgfmt_desc_get_num_comps(&desc) != 3 ||
+        desc.align_x > 4)
         return;
 
-    rp->comp_size = (fmt->depth + 7) / 8;
-    assert(rp->comp_size == 1 || rp->comp_size == 2);
+    uint8_t y_loc[4];
+    if (!mp_imgfmt_get_packed_yuv_locations(desc.id, y_loc))
+        return;
+
+    for (int n = 0; n < MP_NUM_COMPONENTS; n++) {
+        if (!desc.comps[n].size)
+            continue;
+        if (desc.comps[n].size != desc.comps[0].size ||
+            desc.comps[n].pad < 0 ||
+            desc.comps[n].offset % desc.comps[0].size)
+            return;
+        if (n == 1 || n == 2) {
+            rp->comp_map[4 + (n - 1)] =
+                desc.comps[n].offset / desc.comps[0].size;
+        }
+    }
+    for (int n = 0; n < desc.align_x; n++) {
+        if (y_loc[n] % desc.comps[0].size)
+            return;
+        rp->comp_map[n] = y_loc[n] / desc.comps[0].size;
+    }
+
+    if (desc.comps[0].size == 8 && desc.align_x == 2) {
+        rp->repack_fringe_yuv = rp->pack ? pa_p422_8 : un_p422_8;
+    } else if (desc.comps[0].size == 16 && desc.align_x == 2) {
+        rp->repack_fringe_yuv = rp->pack ? pa_p422_16 : un_p422_16;
+    } else if (desc.comps[0].size == 8 && desc.align_x == 4) {
+        rp->repack_fringe_yuv = rp->pack ? pa_p411_8 : un_p411_8;
+    }
+
+    if (!rp->repack_fringe_yuv)
+        return;
 
     struct mp_regular_imgfmt yuvfmt = {
         .component_type = MP_COMPONENT_TYPE_UINT,
         // NB: same problem with P010 and not clearing padding.
-        .component_size = rp->comp_size,
+        .component_size = desc.comps[0].size / 8u,
         .num_planes = 3,
         .planes = { {1, {1}}, {1, {2}}, {1, {3}} },
-        .chroma_xs = 1,
+        .chroma_xs = desc.chroma_xs,
         .chroma_ys = 0,
     };
     rp->imgfmt_b = mp_find_regular_imgfmt(&yuvfmt);
-    rp->repack = fringe_yuv422_repack;
-    rp->comp_map = (uint8_t *)fmt->comp;
+    rp->repack = fringe_yuv_repack;
 
-    if (fmt->be) {
-        assert(rp->comp_size == 2);
-        rp->endian_size = 2;
+    if (desc.endian_shift) {
+        rp->endian_size = 1 << desc.endian_shift;
+        assert(rp->endian_size == 2);
     }
 }
 
@@ -851,8 +825,8 @@ static void repack_float(struct mp_repack *rp,
     for (int p = 0; p < b->num_planes; p++) {
         int h = (1 << b->fmt.chroma_ys) - (1 << b->fmt.ys[p]) + 1;
         for (int y = 0; y < h; y++) {
-            void *pa = mp_image_pixel_ptr(a, p, a_x, a_y + y);
-            void *pb = mp_image_pixel_ptr(b, p, b_x, b_y + y);
+            void *pa = mp_image_pixel_ptr_ny(a, p, a_x, a_y + y);
+            void *pb = mp_image_pixel_ptr_ny(b, p, b_x, b_y + y);
 
             packer(pa, pb, w >> b->fmt.xs[p], rp->f32_m[p], rp->f32_o[p],
                    rp->f32_pmax[p]);
@@ -961,7 +935,7 @@ static bool setup_format_ne(struct mp_repack *rp)
     if (!rp->imgfmt_b)
         setup_fringe_rgb_packer(rp);
     if (!rp->imgfmt_b)
-        setup_fringe_yuv422_packer(rp);
+        setup_fringe_yuv_packer(rp);
     if (!rp->imgfmt_b)
         rp->imgfmt_b = rp->imgfmt_a; // maybe it was planar after all
 
@@ -974,12 +948,13 @@ static bool setup_format_ne(struct mp_repack *rp)
         return false;
 
     // Endian swapping.
-    if (rp->imgfmt_a != rp->imgfmt_user) {
-        struct mp_regular_imgfmt ndesc;
-        if (!mp_get_regular_imgfmt(&ndesc, rp->imgfmt_a) || ndesc.num_planes > 4)
-            return false;
-        rp->endian_size = ndesc.component_size;
-        if (rp->endian_size != 2 && rp->endian_size != 4)
+    if (rp->imgfmt_a != rp->imgfmt_user &&
+        rp->imgfmt_a == mp_find_other_endian(rp->imgfmt_user))
+    {
+        struct mp_imgfmt_desc desc_a = mp_imgfmt_get_desc(rp->imgfmt_a);
+        struct mp_imgfmt_desc desc_u = mp_imgfmt_get_desc(rp->imgfmt_user);
+        rp->endian_size = 1 << desc_u.endian_shift;
+        if (!desc_a.endian_shift && rp->endian_size != 2 && rp->endian_size != 4)
             return false;
     }
 
@@ -1065,7 +1040,6 @@ static void reset_params(struct mp_repack *rp)
     rp->endian_size = 0;
     rp->packed_repack_scanline = NULL;
     rp->comp_size = 0;
-    rp->comp_map = NULL;
     talloc_free(rp->comp_lut);
     rp->comp_lut = NULL;
 }

@@ -53,29 +53,31 @@
 #include "client.h"
 #include "libmpv/client.h"
 
+extern char **environ;
+
 // List of builtin modules and their contents as strings.
 // All these are generated from player/lua/*.lua
 static const char * const builtin_lua_scripts[][2] = {
     {"mp.defaults",
-#   include "player/lua/defaults.inc"
+#   include "generated/player/lua/defaults.lua.inc"
     },
     {"mp.assdraw",
-#   include "player/lua/assdraw.inc"
+#   include "generated/player/lua/assdraw.lua.inc"
     },
     {"mp.options",
-#   include "player/lua/options.inc"
+#   include "generated/player/lua/options.lua.inc"
     },
     {"@osc.lua",
-#   include "player/lua/osc.inc"
+#   include "generated/player/lua/osc.lua.inc"
     },
     {"@ytdl_hook.lua",
-#   include "player/lua/ytdl_hook.inc"
+#   include "generated/player/lua/ytdl_hook.lua.inc"
     },
     {"@stats.lua",
-#   include "player/lua/stats.inc"
+#   include "generated/player/lua/stats.lua.inc"
     },
     {"@console.lua",
-#   include "player/lua/console.inc"
+#   include "generated/player/lua/console.lua.inc"
     },
     {0}
 };
@@ -1185,6 +1187,16 @@ static int script_format_json(lua_State *L, void *tmp)
     return 2;
 }
 
+static int script_get_env_list(lua_State *L)
+{
+    lua_newtable(L); // table
+    for (int n = 0; environ && environ[n]; n++) {
+        lua_pushstring(L, environ[n]); // table str
+        lua_rawseti(L, -2, n + 1); // table
+    }
+    return 1;
+}
+
 #define FN_ENTRY(name) {#name, script_ ## name, 0}
 #define AF_ENTRY(name) {#name, 0, script_ ## name}
 struct fn_entry {
@@ -1237,6 +1249,7 @@ static const struct fn_entry utils_fns[] = {
     FN_ENTRY(getpid),
     AF_ENTRY(parse_json),
     AF_ENTRY(format_json),
+    FN_ENTRY(get_env_list),
     {0}
 };
 

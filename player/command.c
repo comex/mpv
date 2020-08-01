@@ -84,6 +84,7 @@ struct command_ctx {
     double last_seek_time;
     double last_seek_pts;
     double marked_pts;
+    bool marked_permanent;
 
     char **warned_deprecated;
     int num_warned_deprecated;
@@ -2131,8 +2132,6 @@ static int property_imgparams(struct mp_image_params p, int action, void *arg)
         {"pixelformat",     SUB_PROP_STR(mp_imgfmt_to_name(p.imgfmt))},
         {"average-bpp",     SUB_PROP_INT(bpp),
                             .unavailable = !bpp},
-        {"plane-depth",     SUB_PROP_INT(desc.plane_bits),
-                            .unavailable = !(desc.flags & MP_IMGFLAG_YUV_P)},
         {"w",               SUB_PROP_INT(p.w)},
         {"h",               SUB_PROP_INT(p.h)},
         {"dw",              SUB_PROP_INT(d_w)},
@@ -4711,11 +4710,14 @@ static void cmd_revert_seek(void *p)
     double oldpts = cmdctx->last_seek_pts;
     if (cmdctx->marked_pts != MP_NOPTS_VALUE)
         oldpts = cmdctx->marked_pts;
-    if (cmd->args[0].v.i == 1) {
+    if (cmd->args[0].v.i & 3) {
         cmdctx->marked_pts = get_current_time(mpctx);
+        cmdctx->marked_permanent = cmd->args[0].v.i & 1;
     } else if (oldpts != MP_NOPTS_VALUE) {
-        cmdctx->last_seek_pts = get_current_time(mpctx);
-        cmdctx->marked_pts = MP_NOPTS_VALUE;
+        if (!cmdctx->marked_permanent) {
+            cmdctx->marked_pts = MP_NOPTS_VALUE;
+            cmdctx->last_seek_pts = get_current_time(mpctx);
+        }
         queue_seek(mpctx, MPSEEK_ABSOLUTE, oldpts, MPSEEK_EXACT,
                    MPSEEK_FLAG_DELAY);
         set_osd_function(mpctx, OSD_REW);
@@ -5147,6 +5149,13 @@ static void cmd_stop(void *p)
 
     if (!(flags & 1))
         playlist_clear(mpctx->playlist);
+
+    if (mpctx->opts->player_idle_mode < 2 &&
+        mpctx->opts->position_save_on_quit)
+    {
+        mp_write_watch_later_conf(mpctx);
+    }
+
     if (mpctx->stop_play != PT_QUIT)
         mpctx->stop_play = PT_STOP;
     mp_wakeup_core(mpctx);
@@ -5297,40 +5306,41 @@ static void cmd_run(void *p)
     char **args = talloc_zero_array(NULL, char *, cmd->num_args + 1);
     for (int n = 0; n < cmd->num_args; n++)
         args[n] = cmd->args[n].v.s;
-    mp_subprocess_detached(mpctx->log, args);
+    mp_msg_flush_status_line(mpctx->log);
+    struct mp_subprocess_opts opts = {
+        .exe = args[0],
+        .args = args,
+        .fds = { {0, .src_fd = 0}, {1, .src_fd = 1}, {2, .src_fd = 2} },
+        .num_fds = 3,
+        .detach = true,
+    };
+    struct mp_subprocess_result res;
+    mp_subprocess2(&opts, &res);
+    if (res.error < 0) {
+        mp_err(mpctx->log, "Starting subprocess failed: %s\n",
+               mp_subprocess_err_str(res.error));
+    }
     talloc_free(args);
 }
 
-struct subprocess_cb_ctx {
+struct subprocess_fd_ctx {
     struct mp_log *log;
     void* talloc_ctx;
     int64_t max_size;
-    bool capture[3];
-    bstr output[3];
+    int msgl;
+    bool capture;
+    bstr output;
 };
 
-static void subprocess_output(struct subprocess_cb_ctx *ctx, int fd,
-                              char *data, size_t size)
+static void subprocess_read(void *p, char *data, size_t size)
 {
-    if (ctx->capture[fd]) {
-        if (ctx->output[fd].len < ctx->max_size)
-            bstr_xappend(ctx->talloc_ctx, &ctx->output[fd], (bstr){data, size});
+    struct subprocess_fd_ctx *ctx = p;
+    if (ctx->capture) {
+        if (ctx->output.len < ctx->max_size)
+            bstr_xappend(ctx->talloc_ctx, &ctx->output, (bstr){data, size});
     } else {
-        int msgl = fd == 2 ? MSGL_ERR : MSGL_INFO;
-        mp_msg(ctx->log, msgl, "%.*s", (int)size, data);
+        mp_msg(ctx->log, ctx->msgl, "%.*s", (int)size, data);
     }
-}
-
-static void subprocess_stdout(void *p, char *data, size_t size)
-{
-    struct subprocess_cb_ctx *ctx = p;
-    subprocess_output(ctx, 1, data, size);
-}
-
-static void subprocess_stderr(void *p, char *data, size_t size)
-{
-    struct subprocess_cb_ctx *ctx = p;
-    subprocess_output(ctx, 2, data, size);
 }
 
 static void cmd_subprocess(void *p)
@@ -5339,6 +5349,11 @@ static void cmd_subprocess(void *p)
     struct MPContext *mpctx = cmd->mpctx;
     char **args = cmd->args[0].v.str_list;
     bool playback_only = cmd->args[1].v.i;
+    bool detach = cmd->args[5].v.i;
+    char **env = cmd->args[6].v.str_list;
+
+    if (env && !env[0])
+        env = NULL; // do not actually set an empty environment
 
     if (!args || !args[0]) {
         MP_ERR(mpctx, "program name missing\n");
@@ -5347,12 +5362,19 @@ static void cmd_subprocess(void *p)
     }
 
     void *tmp = talloc_new(NULL);
-    struct subprocess_cb_ctx ctx = {
-        .log = mp_log_new(tmp, mpctx->log, cmd->cmd->sender),
-        .talloc_ctx = tmp,
-        .max_size = cmd->args[2].v.i,
-        .capture = {0, cmd->args[3].v.i, cmd->args[4].v.i},
-    };
+
+    struct mp_log *fdlog = mp_log_new(tmp, mpctx->log, cmd->cmd->sender);
+    struct subprocess_fd_ctx fdctx[3];
+    for (int fd = 0; fd < 3; fd++) {
+        fdctx[fd] = (struct subprocess_fd_ctx) {
+            .log = fdlog,
+            .talloc_ctx = tmp,
+            .max_size = cmd->args[2].v.i,
+            .msgl = fd == 2 ? MSGL_ERR : MSGL_INFO,
+        };
+    }
+    fdctx[1].capture = cmd->args[3].v.i;
+    fdctx[2].capture = cmd->args[4].v.i;
 
     pthread_mutex_lock(&mpctx->abort_lock);
     cmd->abort->coupled_to_playback = playback_only;
@@ -5361,9 +5383,40 @@ static void cmd_subprocess(void *p)
 
     mp_core_unlock(mpctx);
 
+    struct mp_subprocess_opts opts = {
+        .exe = args[0],
+        .args = args,
+        .env = env,
+        .cancel = cmd->abort->cancel,
+        .detach = detach,
+        .fds = {
+            {
+                .fd = 0, // stdin
+                .src_fd = 0,
+            },
+        },
+        .num_fds = 1,
+    };
+
+    // stdout, stderr
+    for (int fd = 1; fd < 3; fd++) {
+        bool capture = fdctx[fd].capture || !detach;
+        opts.fds[opts.num_fds++] = (struct mp_subprocess_fd){
+            .fd = fd,
+            .src_fd = capture ? -1 : fd,
+            .on_read = capture ? subprocess_read : NULL,
+            .on_read_ctx = &fdctx[fd],
+        };
+    }
+
+    struct mp_subprocess_result sres;
+    mp_subprocess2(&opts, &sres);
+    int status = sres.exit_status;
     char *error = NULL;
-    int status = mp_subprocess(args, cmd->abort->cancel, &ctx,
-                               subprocess_stdout, subprocess_stderr, &error);
+    if (sres.error < 0) {
+        error = (char *)mp_subprocess_err_str(sres.error);
+        status = sres.error;
+    }
 
     mp_core_lock(mpctx);
 
@@ -5373,14 +5426,14 @@ static void cmd_subprocess(void *p)
     node_map_add_flag(res, "killed_by_us", status == MP_SUBPROCESS_EKILLED_BY_US);
     node_map_add_string(res, "error_string", error ? error : "");
     const char *sname[] = {NULL, "stdout", "stderr"};
-    for (int n = 1; n < 3; n++) {
-        if (!ctx.capture[n])
+    for (int fd = 1; fd < 3; fd++) {
+        if (!fdctx[fd].capture)
             continue;
         struct mpv_byte_array *ba =
-            node_map_add(res, sname[n], MPV_FORMAT_BYTE_ARRAY)->u.ba;
+            node_map_add(res, sname[fd], MPV_FORMAT_BYTE_ARRAY)->u.ba;
         *ba = (struct mpv_byte_array){
-            .data = talloc_steal(ba, ctx.output[n].start),
-            .size = ctx.output[n].len,
+            .data = talloc_steal(ba, fdctx[fd].output.start),
+            .size = fdctx[fd].output.len,
         };
     }
 
@@ -5805,7 +5858,8 @@ const struct mp_cmd_def mp_cmds[] = {
         .scalable = true,
     },
     { "revert-seek", cmd_revert_seek,
-        { {"flags", OPT_FLAGS(v.i, {"mark", 1}), .flags = MP_CMD_OPT_ARG} },
+        { {"flags", OPT_FLAGS(v.i, {"mark", 2|0}, {"mark-permanent", 2|1}),
+           .flags = MP_CMD_OPT_ARG} },
     },
     { "quit", cmd_quit, { {"code", OPT_INT(v.i), .flags = MP_CMD_OPT_ARG} },
         .priv = &(const bool){0} },
@@ -6018,6 +6072,8 @@ const struct mp_cmd_def mp_cmds[] = {
                 OPTDEF_INT64(64 * 1024 * 1024)},
             {"capture_stdout", OPT_FLAG(v.i), .flags = MP_CMD_OPT_ARG},
             {"capture_stderr", OPT_FLAG(v.i), .flags = MP_CMD_OPT_ARG},
+            {"detach", OPT_FLAG(v.i), .flags = MP_CMD_OPT_ARG},
+            {"env", OPT_STRINGLIST(v.str_list), .flags = MP_CMD_OPT_ARG},
         },
         .spawn_thread = true,
         .can_abort = true,
@@ -6146,8 +6202,10 @@ const struct mp_cmd_def mp_cmds[] = {
 
     { "load-script", cmd_load_script, {{"filename", OPT_STRING(v.s)}} },
 
-    { "dump-cache", cmd_dump_cache, { {"start", OPT_TIME(v.d), .min = MP_NOPTS_VALUE},
-                                      {"end", OPT_TIME(v.d), .min = MP_NOPTS_VALUE},
+    { "dump-cache", cmd_dump_cache, { {"start", OPT_TIME(v.d),
+                                        .flags = M_OPT_ALLOW_NO},
+                                      {"end", OPT_TIME(v.d),
+                                        .flags = M_OPT_ALLOW_NO},
                                       {"filename", OPT_STRING(v.s)} },
         .exec_async = true,
         .can_abort = true,
@@ -6242,6 +6300,7 @@ static void command_event(struct MPContext *mpctx, int event, void *arg)
     if (event == MPV_EVENT_START_FILE) {
         ctx->last_seek_pts = MP_NOPTS_VALUE;
         ctx->marked_pts = MP_NOPTS_VALUE;
+        ctx->marked_permanent = false;
     }
 
     if (event == MPV_EVENT_PLAYBACK_RESTART)

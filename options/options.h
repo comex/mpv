@@ -31,6 +31,7 @@ typedef struct mp_vo_opts {
     float zoom;
     float pan_x, pan_y;
     float align_x, align_y;
+    float scale_x, scale_y;
     float margin_x[2];
     float margin_y[2];
     int unscaled;
@@ -205,7 +206,7 @@ typedef struct MPOpts {
     int video_sync;
     double sync_max_video_change;
     double sync_max_audio_change;
-    double sync_audio_drop_size;
+    int sync_max_factor;
     int hr_seek;
     float hr_seek_demuxer_offset;
     int hr_seek_framedrop;
@@ -217,6 +218,7 @@ typedef struct MPOpts {
     int term_osd;
     int term_osd_bar;
     char *term_osd_bar_chars;
+    char *term_title;
     char *playing_msg;
     char *osd_playing_msg;
     char *status_msg;

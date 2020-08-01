@@ -210,11 +210,10 @@ This applies to certain APIs, such as ``mp.command_native()`` (with tables that
 have string keys) in Lua scripting, or ``mpv_command_node()`` (with
 MPV_FORMAT_NODE_MAP) in the C libmpv client API.
 
-Like with array commands, quoting and escaping is inherently not needed in the
-normal case.
-
-The name of each command is defined in each command description in the
-`List of Input Commands`_. ``--input-cmdlist`` also lists them.
+The name of the command is provided with a ``name`` string field. The name of
+each command is defined in each command description in the
+`List of Input Commands`_. ``--input-cmdlist`` also lists them. See the
+``subprocess`` command for an example.
 
 Some commands do not support named arguments (e.g. ``run`` command). You need
 to use APIs that pass arguments as arrays.
@@ -277,6 +276,12 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
         Mark the current time position. The next normal ``revert-seek`` command
         will seek back to this point, no matter how many seeks happened since
         last time.
+    mark-permanent
+        If set, mark the current position, and do not change the mark position
+        before the next ``revert-seek`` command that has ``mark`` or
+        ``mark-permanent`` set (or playback of the current file ends). Until
+        this happens, ``revert-seek`` will always seek to the marked point. This
+        flag cannot be combined with ``mark``.
 
     Using it without any arguments gives you the default behavior.
 
@@ -523,12 +528,31 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
     ``capture_stderr`` (``MPV_FORMAT_FLAG``)
         Same as ``capture_stdout``, but for stderr.
 
+    ``detach`` (``MPV_FORMAT_FLAG``)
+        Whether to run the process in detached mode (optional, default: no). In
+        this mode, the process is run in a new process session, and the command
+        does not wait for the process to terminate. If neither
+        ``capture_stdout`` nor ``capture_stderr`` have been set to ``yes``,
+        the command returns immediately after the new process has been started,
+        otherwise the command will read as long as the pipes are open.
+
+    ``env`` (``MPV_FORMAT_NODE_ARRAY[MPV_FORMAT_STRING]``)
+        Set a list of environment variables for the new process (default: empty).
+        If an empty list is passed, the environment of the mpv process is used
+        instead. (Unlike the underlying OS mechanisms, the mpv command cannot
+        start a process with empty environment. Fortunately, that is completely
+        useless.) The format of the list is as in the ``execle()`` syscall. Each
+        string item defines an environment variable as in ``NANME=VALUE``.
+
+        On Lua, you may use ``utils.get_env_list()`` to retrieve the current
+        environment if you e.g. simply want to add a new variable.
+
     The command returns the following result (as ``MPV_FORMAT_NODE_MAP``):
 
     ``status`` (``MPV_FORMAT_INT64``)
         The raw exit status of the process. It will be negative on error. The
         meaning of negative values is undefined, other than meaning error (and
-        does not necessarily correspond to OS low level exit status values).
+        does not correspond to OS low level exit status values).
 
         On Windows, it can happen that a negative return value is returned
         even if the process exits gracefully, because the win32 ``UINT`` exit
@@ -571,6 +595,23 @@ Remember to quote string arguments in input.conf (see `Flat command syntax`_).
         Don't forget to set the ``playback_only`` field if you want the command
         run while the player is in idle mode, or if you don't want that end of
         playback kills the command.
+
+    .. admonition:: Example
+
+        ::
+
+            local r = mp.command_native({
+                name = "subprocess",
+                playback_only = false,
+                capture_stdout = true,
+                args = {"cat", "/proc/cpuinfo"},
+            })
+            if r.status == 0 then
+                print("result: " .. r.stdout)
+            end
+
+        This is a fairly useless Lua example, which demonstrates how to run
+        a process in a blocking manner, and retrieving its stdout output.
 
 ``quit [<code>]``
     Exit the player. If an argument is given, it's used as process exit code.
@@ -788,12 +829,15 @@ Input Commands that are Possibly Subject to Change
         without filter name and parameters as filter entry. This toggles the
         enable/disable flag.
 
+    <remove>
+        Like ``toggle``, but always remove the given filter from the chain.
+
     <del>
         Remove the given filters from the video chain. Unlike in the other
         cases, the second parameter is a comma separated list of filter names
         or integer indexes. ``0`` would denote the first filter. Negative
         indexes start from the last filter, and ``-1`` denotes the last
-        filter. Deprecated.
+        filter. Deprecated, use ``remove``.
 
     <clr>
         Remove all filters. Note that like the other sub-commands, this does
@@ -2235,11 +2279,6 @@ Property list
         Average bits-per-pixel as integer. Subsampled planar formats use a
         different resolution, which is the reason this value can sometimes be
         odd or confusing. Can be unavailable with some formats.
-
-    ``video-params/plane-depth``
-        Bit depth for each color component as integer. This is only exposed
-        for planar or single-component formats, and is unavailable for other
-        formats.
 
     ``video-params/w``, ``video-params/h``
         Video size as integers, with no aspect correction applied.

@@ -147,6 +147,8 @@ extern "C" {
  * - mpv may start sub processes, so overriding SIGCHLD, or waiting on all PIDs
  *   (such as calling wait()) by the parent process or any other library within
  *   the process must be avoided. libmpv itself only waits for its own PIDs.
+ * - If anything in the process registers signal handlers, they must set the
+ *   SA_RESTART flag. Otherwise you WILL get random failures on signals.
  *
  * Encoding of filenames
  * ---------------------
@@ -232,7 +234,7 @@ extern "C" {
  * relational operators (<, >, <=, >=).
  */
 #define MPV_MAKE_VERSION(major, minor) (((major) << 16) | (minor) | 0UL)
-#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 108)
+#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(1, 109)
 
 /**
  * The API user is allowed to "#define MPV_ENABLE_DEPRECATED 0" before

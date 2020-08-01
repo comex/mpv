@@ -222,12 +222,8 @@ void mp_sws_enable_cmdline_opts(struct mp_sws_context *ctx, struct mpv_global *g
 // Optional, but possibly useful to avoid having to handle mp_sws_scale errors.
 int mp_sws_reinit(struct mp_sws_context *ctx)
 {
-    struct mp_image_params *src = &ctx->src;
-    struct mp_image_params *dst = &ctx->dst;
-
-    // Neutralize unsupported or ignored parameters.
-    src->p_w = dst->p_w = 0;
-    src->p_h = dst->p_h = 0;
+    struct mp_image_params src = ctx->src;
+    struct mp_image_params dst = ctx->dst;
 
     if (cache_valid(ctx))
         return 0;
@@ -242,8 +238,8 @@ int mp_sws_reinit(struct mp_sws_context *ctx)
 #if HAVE_ZIMG
     if (allow_zimg(ctx)) {
         ctx->zimg->log = ctx->log;
-        ctx->zimg->src = *src;
-        ctx->zimg->dst = *dst;
+        ctx->zimg->src = src;
+        ctx->zimg->dst = dst;
         if (ctx->zimg_opts)
             ctx->zimg->opts = *ctx->zimg_opts;
         if (mp_zimg_config(ctx->zimg)) {
@@ -264,44 +260,44 @@ int mp_sws_reinit(struct mp_sws_context *ctx)
     if (!ctx->sws)
         return -1;
 
-    mp_image_params_guess_csp(src); // sanitize colorspace/colorlevels
-    mp_image_params_guess_csp(dst);
+    mp_image_params_guess_csp(&src); // sanitize colorspace/colorlevels
+    mp_image_params_guess_csp(&dst);
 
-    enum AVPixelFormat s_fmt = imgfmt2pixfmt(src->imgfmt);
+    enum AVPixelFormat s_fmt = imgfmt2pixfmt(src.imgfmt);
     if (s_fmt == AV_PIX_FMT_NONE || sws_isSupportedInput(s_fmt) < 1) {
         MP_ERR(ctx, "Input image format %s not supported by libswscale.\n",
-               mp_imgfmt_to_name(src->imgfmt));
+               mp_imgfmt_to_name(src.imgfmt));
         return -1;
     }
 
-    enum AVPixelFormat d_fmt = imgfmt2pixfmt(dst->imgfmt);
+    enum AVPixelFormat d_fmt = imgfmt2pixfmt(dst.imgfmt);
     if (d_fmt == AV_PIX_FMT_NONE || sws_isSupportedOutput(d_fmt) < 1) {
         MP_ERR(ctx, "Output image format %s not supported by libswscale.\n",
-               mp_imgfmt_to_name(dst->imgfmt));
+               mp_imgfmt_to_name(dst.imgfmt));
         return -1;
     }
 
-    int s_csp = mp_csp_to_sws_colorspace(src->color.space);
-    int s_range = src->color.levels == MP_CSP_LEVELS_PC;
+    int s_csp = mp_csp_to_sws_colorspace(src.color.space);
+    int s_range = src.color.levels == MP_CSP_LEVELS_PC;
 
-    int d_csp = mp_csp_to_sws_colorspace(dst->color.space);
-    int d_range = dst->color.levels == MP_CSP_LEVELS_PC;
+    int d_csp = mp_csp_to_sws_colorspace(dst.color.space);
+    int d_range = dst.color.levels == MP_CSP_LEVELS_PC;
 
     av_opt_set_int(ctx->sws, "sws_flags", ctx->flags, 0);
 
-    av_opt_set_int(ctx->sws, "srcw", src->w, 0);
-    av_opt_set_int(ctx->sws, "srch", src->h, 0);
+    av_opt_set_int(ctx->sws, "srcw", src.w, 0);
+    av_opt_set_int(ctx->sws, "srch", src.h, 0);
     av_opt_set_int(ctx->sws, "src_format", s_fmt, 0);
 
-    av_opt_set_int(ctx->sws, "dstw", dst->w, 0);
-    av_opt_set_int(ctx->sws, "dsth", dst->h, 0);
+    av_opt_set_int(ctx->sws, "dstw", dst.w, 0);
+    av_opt_set_int(ctx->sws, "dsth", dst.h, 0);
     av_opt_set_int(ctx->sws, "dst_format", d_fmt, 0);
 
     av_opt_set_double(ctx->sws, "param0", ctx->params[0], 0);
     av_opt_set_double(ctx->sws, "param1", ctx->params[1], 0);
 
-    int cr_src = mp_chroma_location_to_av(src->chroma_location);
-    int cr_dst = mp_chroma_location_to_av(dst->chroma_location);
+    int cr_src = mp_chroma_location_to_av(src.chroma_location);
+    int cr_dst = mp_chroma_location_to_av(dst.chroma_location);
     int cr_xpos, cr_ypos;
     if (avcodec_enum_to_chroma_pos(&cr_xpos, &cr_ypos, cr_src) >= 0) {
         av_opt_set_int(ctx->sws, "src_h_chr_pos", cr_xpos, 0);
@@ -393,14 +389,15 @@ static const int endian_swaps[][2] = {
 // might reduce the effective bit depth in some cases.
 struct mp_image *mp_img_swap_to_native(struct mp_image *img)
 {
+    int avfmt = imgfmt2pixfmt(img->imgfmt);
     int to = AV_PIX_FMT_NONE;
     for (int n = 0; endian_swaps[n][0] != AV_PIX_FMT_NONE; n++) {
-        if (endian_swaps[n][0] == img->fmt.avformat)
+        if (endian_swaps[n][0] == avfmt)
             to = endian_swaps[n][1];
     }
     if (to == AV_PIX_FMT_NONE || !mp_image_make_writeable(img))
         return img;
-    int elems = img->fmt.bytes[0] / 2 * img->w;
+    int elems = img->fmt.bpp[0] / 8 / 2 * img->w;
     for (int y = 0; y < img->h; y++) {
         uint16_t *p = (uint16_t *)(img->planes[0] + y * img->stride[0]);
         for (int i = 0; i < elems; i++)

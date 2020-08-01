@@ -264,6 +264,7 @@ typedef struct MPContext {
     char *term_osd_status;
     char *term_osd_subs;
     char *term_osd_contents;
+    char *term_osd_title;
     char *last_window_title;
     struct voctrl_playback_state vo_playback_state;
 
@@ -347,8 +348,6 @@ typedef struct MPContext {
     int display_sync_drift_dir;
     // Timing error (in seconds) due to rounding on vsync boundaries
     double display_sync_error;
-    double audio_drop_throttle;
-    bool audio_drop_deprecated_msg;
     // Number of mistimed frames.
     int mistimed_frames_total;
     bool hrseek_active;     // skip all data until hrseek_pts

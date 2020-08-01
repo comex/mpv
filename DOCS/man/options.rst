@@ -570,14 +570,13 @@ Playback Control
       logged errors).
 
     - The demuxer cache is essential for backward demuxing. Make sure to set
-      ``--demuxer-seekable-cache`` (or just use ``--cache``). The cache size
-      might matter. If it's too small, a queue overflow will be logged, and
-      backward playback cannot continue, or it performs too many low level
-      seeks. If it's too large, implementation tradeoffs may cause general
-      performance issues. Use ``--demuxer-max-bytes`` to potentially increase
-      the amount of packets the demuxer layer can queue for reverse demuxing
-      (basically it's the ``--video-reversal-buffer`` equivalent for the
-      demuxer layer).
+      ``--cache=yes``. The cache size might matter. If it's too small, a queue
+      overflow will be logged, and backward playback cannot continue, or it
+      performs too many low level seeks. If it's too large, implementation
+      tradeoffs may cause general performance issues. Use
+      ``--demuxer-max-bytes`` to potentially increase the amount of packets the
+      demuxer layer can queue for reverse demuxing (basically it's the
+      ``--video-reversal-buffer`` equivalent for the demuxer layer).
 
     - Setting ``--vd-queue-enable=yes`` can help a lot to make playback smooth
       (once it works).
@@ -1466,6 +1465,15 @@ Video
     the size, and so on.
 
     This option is disabled if the ``--no-keepaspect`` option is used.
+
+``--video-scale-x=<value>``, ``--video-scale-y=<value>``
+    Multiply the video display size with the given value (default: 1.0). If a
+    non-default value is used, this will be different from the window size, so
+    video will be either cut off, or black bars are added.
+
+    This value is multiplied with the value derived from ``--video-zoom`` and
+    the normal video aspect aspect ratio. This option is disabled if the
+    ``--no-keepaspect`` option is used.
 
 ``--video-align-x=<-1-1>``, ``--video-align-y=<-1-1>``
     Moves the video rectangle within the black borders, which are usually added
@@ -2928,7 +2936,7 @@ Window
     (X11 only)
     Show the video window on all virtual desktops.
 
-``--geometry=<[W[xH]][+-x+-y]>``, ``--geometry=<x:y>``
+``--geometry=<[W[xH]][+-x+-y][/WS]>``, ``--geometry=<x:y>``
     Adjust the initial window position or size. ``W`` and ``H`` set the window
     size in pixels. ``x`` and ``y`` set the window position, measured in pixels
     from the top-left corner of the screen to the top-left corner of the image
@@ -2937,7 +2945,9 @@ Window
     Positions are specified similar to the standard X11 ``--geometry`` option
     format, in which e.g. +10-50 means "place 10 pixels from the left border and
     50 pixels from the lower border" and "--20+-10" means "place 20 pixels
-    beyond the right and 10 pixels beyond the top border".
+    beyond the right and 10 pixels beyond the top border". A trailing ``/``
+    followed by an integer denotes on which workspace (virtual desktop) the
+    window should appear (X11 only).
 
     If an external window is specified using the ``--wid`` option, this
     option is ignored.
@@ -2974,9 +2984,10 @@ Window
             Forces the window width and height to half the screen width and
             height. Will show black borders to compensate for the video aspect
             ratio (with most VOs and without ``--no-keepaspect``).
-        ``50%+10+10``
+        ``50%+10+10/2``
             Sets the window to half the screen widths, and positions it 10
-            pixels below/left of the top left corner of the screen.
+            pixels below/left of the top left corner of the screen, on the
+            second workspace.
 
     See also ``--autofit`` and ``--autofit-larger`` for fitting the window into
     a given size without changing aspect ratio.
@@ -3139,7 +3150,8 @@ Window
     always re-enabled when the player is paused.
 
     This is not supported on all video outputs or platforms. Sometimes it is
-    implemented, but does not work (especially with Linux "desktops").
+    implemented, but does not work (especially with Linux "desktops"). Read the
+    `Disabling Screensaver`_ section very carefully.
 
 ``--wid=<ID>``
     This tells mpv to attach to an existing window. If a VO is selected that
@@ -3538,7 +3550,8 @@ Demuxer
 
 ``--demuxer-max-back-bytes=<bytesize>``
     This controls how much past data the demuxer is allowed to preserve. This
-    is useful only if the ``--demuxer-seekable-cache`` option is enabled.
+    is useful only if the cache is enabled.
+
     Unlike the forward cache, there is no control how many seconds are actually
     cached - it will simply use as much memory this option allows. Setting this
     option to 0 will strictly disable any back buffer, but this will lead to
@@ -3572,17 +3585,17 @@ Demuxer
     buffer is only reduced when new data is read.
 
 ``--demuxer-seekable-cache=<yes|no|auto>``
-    This controls whether seeking can use the demuxer cache (default: auto). If
-    enabled, short seek offsets will not trigger a low level demuxer seek
+    Debugging option to control whether seeking can use the demuxer cache
+    (default: auto). Normally you don't ever need to set this; the default
+    ``auto`` does the right thing and enables cache seeking it if ``--cache``
+    is set to ``yes`` (or is implied ``yes`` if ``--cache=auto``).
+
+    If enabled, short seek offsets will not trigger a low level demuxer seek
     (which means for example that slow network round trips or FFmpeg seek bugs
     can be avoided). If a seek cannot happen within the cached range, a low
     level seek will be triggered. Seeking outside of the cache will start a new
     cached range, but can discard the old cache range if the demuxer exhibits
     certain unsupported behavior.
-
-    Keep in mind that some events can flush the cache or force a low level
-    seek anyway, such as switching tracks, or attempting to seek before the
-    start or after the end of the file.
 
     The special value ``auto`` means ``yes`` in the same situation as
     ``--cache-secs`` is used (i.e. when the stream appears to be a network
@@ -4270,6 +4283,17 @@ Software Scaler
 ``--zimg-dither=<no|ordered|random|error-diffusion>``
     Dithering (default: random).
 
+``--zimg-threads=<auto|integer>``
+    Set the maximum number of threads to use for scaling (default: auto).
+    ``auto`` uses the number of logical cores on the current machine. Note that
+    the scaler may use less threads (or even just 1 thread) depending on stuff.
+    Passing a value of 1 disables threading and always scales the image in a
+    single operation. Higher thread counts waste resources, but make it
+    typically faster.
+
+    Note that some zimg git versions had bugs that will corrupt the output if
+    threads are used.
+
 ``--zimg-fast=<yes|no>``
     Allow optimizations that help with performance, but reduce quality (default:
     yes). Currently, this may simplify gamma conversion operations.
@@ -4429,6 +4453,15 @@ Terminal
     Print out a custom string during playback instead of the standard status
     line. Expands properties. See `Property Expansion`_.
 
+``--term-title=<string>``
+    Set the terminal title. Currently, this simply concatenates the escape
+    sequence setting the window title with the provided (property expanded)
+    string. This will mess up if the expanded string contain bytes that end the
+    escape sequence, or if the terminal does not understand the sequence. The
+    latter probably includes the regrettable win32.
+
+    Expands properties. See `Property Expansion`_.
+
 ``--msg-module``
     Prepend module name to each console message.
 
@@ -4445,9 +4478,8 @@ Cache
     Decide whether to use network cache settings (default: auto).
 
     If enabled, use up to ``--cache-secs`` for the cache size (but still limited
-    to ``--demuxer-max-bytes``). ``--demuxer-seekable-cache=auto`` behaves as if
-    it was set to ``yes``. If disabled, ``--cache-pause`` and related are
-    implicitly disabled.
+    to ``--demuxer-max-bytes``), and make the cached data seekable (if possible).
+    If disabled, ``--cache-pause`` and related are implicitly disabled.
 
     The ``auto`` choice enables this depending on whether the stream is thought
     to involve network accesses or other slow media (this is an imperfect
@@ -5207,6 +5239,11 @@ The following video options are currently all specific to ``--vo=gpu`` and
     set by ``--vulkan-queue-count``), mpv will internally try and prefer the
     use of compute shaders over fragment shaders wherever possible. Enabled by
     default, although Nvidia users may want to disable it.
+
+``--vulkan-disable-events``
+    Disable the use of VkEvents, for debugging purposes or for compatibility
+    with some older drivers / vulkan portability layers that don't provide
+    working VkEvent support.
 
 ``--d3d11-exclusive-fs=<yes|no>``
     Switches the D3D11 swap chain fullscreen state to 'fullscreen' when
@@ -5987,12 +6024,12 @@ The following video options are currently all specific to ``--vo=gpu`` and
     additional effect of parametrizing the inverse OOTF, in order to get
     colorimetrically consistent results with the mastering display. For SDR, or
     when using an ICC (profile (``--icc-profile``), setting this to a value
-    above 100 essentially causes the display to be treated as if it were an HDR
+    above 203 essentially causes the display to be treated as if it were an HDR
     display in disguise. (See the note below)
 
     In ``auto`` mode (the default), the chosen peak is an appropriate value
-    based on the TRC in use. For SDR curves, it uses 100. For HDR curves, it
-    uses 100 * the transfer function's nominal peak.
+    based on the TRC in use. For SDR curves, it uses 203. For HDR curves, it
+    uses 203 * the transfer function's nominal peak.
 
     .. note::
 
@@ -6040,6 +6077,9 @@ The following video options are currently all specific to ``--vo=gpu`` and
         color/brightness accuracy. This is roughly equivalent to
         ``--tone-mapping=reinhard --tone-mapping-param=0.24``. If possible,
         you should also enable ``--hdr-compute-peak`` for the best results.
+    bt.2390
+        Perceptual tone mapping curve (EETF) specified in ITU-R Report BT.2390.
+        This is the recommended curve to use for typical HDR-mastered content.
         (Default)
     gamma
         Fits a logarithmic transfer between the tone curves.
@@ -6145,6 +6185,13 @@ The following video options are currently all specific to ``--vo=gpu`` and
     gamut of a standard gamut (sRGB) display. This option also does not work
     well with ICC profiles, since the 3DLUTs are always generated against the
     source color space and have chromatically-accurate clipping built in.
+
+``--gamut-clipping``
+    If enabled (default: yes), mpv will colorimetrically clip out-of-gamut
+    colors by desaturating them (preserving luma), rather than hard-clipping
+    each component individually. This should make playback of wide gamut
+    content on typical (standard gamut) monitors look much more aesthetically
+    pleasing and less blown-out.
 
 ``--use-embedded-icc-profile``
     Load the embedded ICC profile contained in media files such as PNG images.
@@ -6403,10 +6450,22 @@ Miscellaneous
                         video. See ``--video-sync-adrop-size``. This mode will
                         cause severe audio artifacts if the real monitor
                         refresh rate is too different from the reported or
-                        forced rate.
+                        forced rate. Since mpv 0.33.0, this acts on entire audio
+                        frames, instead of single samples.
     :display-desync:    Sync video to display, and let audio play on its own.
     :desync:            Sync video according to system clock, and let audio play
                         on its own.
+
+``--video-sync-max-factor=<value>``
+    Maximum multiple for which to try to fit the video's FPS to the display's
+    FPS (default: 5).
+
+    For example, if this is set to 1, the video FPS is forced to an integer
+    multiple of the display FPS, as long as the speed change does not exceed
+    the value set by ``--video-sync-max-video-change``.
+
+    This is mostly for testing, and the option may be randomly changed in the
+    future without notice.
 
 ``--video-sync-max-video-change=<value>``
     Maximum speed difference in percent that is applied to video with
@@ -6434,13 +6493,6 @@ Miscellaneous
     the A/V desync cannot be compensated, too high values could lead to chaotic
     frame dropping due to the audio "overshooting" and skipping multiple video
     frames before the sync logic can react.
-
-``--video-sync-adrop-size=<value>``
-    For the ``--video-sync=display-adrop`` mode. This mode duplicates/drops
-    audio data to keep audio in sync with video. To avoid audio artifacts on
-    jitter (which would add/remove samples all the time), this is done in
-    relatively large, fixed units, controlled by this option. The unit is
-    seconds.
 
 ``--mf-fps=<value>``
     Framerate used when decoding from multiple PNG or JPEG files with ``mf://``

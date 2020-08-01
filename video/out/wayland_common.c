@@ -31,16 +31,16 @@
 #include "wayland_common.h"
 
 // Generated from xdg-shell.xml
-#include "video/out/wayland/xdg-shell.h"
+#include "generated/wayland/xdg-shell.h"
 
 // Generated from idle-inhibit-unstable-v1.xml
-#include "video/out/wayland/idle-inhibit-v1.h"
+#include "generated/wayland/idle-inhibit-unstable-v1.h"
 
 // Generated from xdg-decoration-unstable-v1.xml
-#include "video/out/wayland/xdg-decoration-v1.h"
+#include "generated/wayland/xdg-decoration-unstable-v1.h"
 
 // Generated from presentation-time.xml
-#include "video/out/wayland/presentation-time.h"
+#include "generated/wayland/presentation-time.h"
 
 #define OPT_BASE_STRUCT struct wayland_opts
 const struct m_sub_options wayland_conf = {
@@ -763,6 +763,7 @@ static void data_device_handle_drop(void *data, struct wl_data_device *wl_ddev)
     close(pipefd[1]);
 
     wl->dnd_fd = pipefd[0];
+    wl_data_offer_finish(wl->dnd_offer);
 }
 
 static void data_device_handle_selection(void *data, struct wl_data_device *wl_ddev,
@@ -829,8 +830,8 @@ static void pres_set_clockid(void *data, struct wp_presentation *pres,
 {
     struct vo_wayland_state *wl = data;
     
-    wl->presentation = pres;
-    clockid = CLOCK_MONOTONIC;
+    if (clockid == CLOCK_MONOTONIC)
+        wl->presentation = pres;
 }
 
 static const struct wp_presentation_listener pres_listener = {
@@ -1458,7 +1459,6 @@ static void check_dnd_fd(struct vo_wayland_state *wl)
                                 file_list, wl->dnd_action);
         talloc_free(buffer);
 end:
-        wl_data_offer_finish(wl->dnd_offer);
         talloc_free(wl->dnd_mime_type);
         wl->dnd_mime_type = NULL;
         wl->dnd_mime_score = 0;
@@ -1652,15 +1652,22 @@ void vo_wayland_wait_frame(struct vo_wayland_state *wl)
 
         poll(fds, 1, poll_time);
 
-        wl_display_read_events(wl->display);
-        wl_display_roundtrip(wl->display);
+        if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            wl_display_cancel_read(wl->display);
+        } else {
+            wl_display_read_events(wl->display);
+        }
+
+        wl_display_dispatch_pending(wl->display);
     }
+
+    if (wl_display_get_error(wl->display) == 0)
+        wl_display_roundtrip(wl->display);
 }
 
 void vo_wayland_wait_events(struct vo *vo, int64_t until_time_us)
 {
     struct vo_wayland_state *wl = vo->wl;
-    struct wl_display *display = wl->display;
 
     if (wl->display_fd == -1)
         return;
@@ -1673,20 +1680,24 @@ void vo_wayland_wait_events(struct vo *vo, int64_t until_time_us)
     int64_t wait_us = until_time_us - mp_time_us();
     int timeout_ms = MPCLAMP((wait_us + 999) / 1000, 0, 10000);
 
-    wl_display_dispatch_pending(display);
-    wl_display_flush(display);
+    while (wl_display_prepare_read(wl->display) != 0)
+        wl_display_dispatch_pending(wl->display);
+    wl_display_flush(wl->display);
 
     poll(fds, 2, timeout_ms);
 
     if (fds[0].revents & (POLLERR | POLLHUP | POLLNVAL)) {
         MP_FATAL(wl, "Error occurred on the display fd, closing\n");
+        wl_display_cancel_read(wl->display);
         close(wl->display_fd);
         wl->display_fd = -1;
         mp_input_put_key(vo->input_ctx, MP_KEY_CLOSE_WIN);
+    } else {
+        wl_display_read_events(wl->display);
     }
 
     if (fds[0].revents & POLLIN)
-        wl_display_dispatch(display);
+        wl_display_dispatch_pending(wl->display);
 
     if (fds[1].revents & POLLIN)
         mp_flush_wakeup_pipe(wl->wakeup_pipe[0]);

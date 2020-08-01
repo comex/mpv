@@ -659,12 +659,12 @@ double calc_average_frame_duration(struct MPContext *mpctx)
 // effective video FPS. If this is not possible, try to do it for multiples,
 // which still leads to an improved end result.
 // Both parameters are durations in seconds.
-static double calc_best_speed(double vsync, double frame)
+static double calc_best_speed(double vsync, double frame, int max_factor)
 {
     double ratio = frame / vsync;
     double best_scale = -1;
     double best_dev = INFINITY;
-    for (int factor = 1; factor <= 5; factor++) {
+    for (int factor = 1; factor <= max_factor; factor++) {
         double scale = ratio * factor / rint(ratio * factor);
         double dev = fabs(scale - 1);
         if (dev < best_dev) {
@@ -683,7 +683,8 @@ static double find_best_speed(struct MPContext *mpctx, double vsync)
         double dur = mpctx->past_frames[n].approx_duration;
         if (dur <= 0)
             continue;
-        total += calc_best_speed(vsync, dur / mpctx->opts->playback_speed);
+        total += calc_best_speed(vsync, dur / mpctx->opts->playback_speed,
+                                 mpctx->opts->sync_max_factor);
         num++;
     }
     return num > 0 ? total / num : 1;
@@ -799,12 +800,6 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
 
     mpctx->display_sync_active = false;
 
-    if (mode == VS_DISP_ADROP && !mpctx->audio_drop_deprecated_msg) {
-        MP_WARN(mpctx, "video-sync=display-adrop mode is deprecated and will "
-                       "be removed in the future.\n");
-        mpctx->audio_drop_deprecated_msg = true;
-    }
-
     if (!VS_IS_DISP(mode))
         return;
     bool resample = mode == VS_DISP_RESAMPLE || mode == VS_DISP_RESAMPLE_VDROP ||
@@ -897,7 +892,7 @@ static void handle_display_sync_frame(struct MPContext *mpctx,
     mpctx->past_frames[0].num_vsyncs = num_vsyncs;
     mpctx->past_frames[0].av_diff = mpctx->last_av_difference;
 
-    if (resample) {
+    if (resample || mode == VS_DISP_ADROP) {
         adjust_audio_resample_speed(mpctx, vsync);
     } else {
         mpctx->speed_factor_a = 1.0;

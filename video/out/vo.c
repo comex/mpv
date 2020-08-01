@@ -341,6 +341,13 @@ error:
 
 struct vo *init_best_video_out(struct mpv_global *global, struct vo_extra *ex)
 {
+    const char *xdg_current_desktop = getenv("XDG_CURRENT_DESKTOP");
+    if (xdg_current_desktop && strstr(xdg_current_desktop, "GNOME")) {
+        struct mp_log *log = mp_log_new(NULL, global->log, "vo");
+        mp_fatal(log, "GNOME detected. Things will be broken.\n");
+        talloc_free(log);
+    }
+
     struct mp_vo_opts *opts = mp_get_config_group(NULL, global, &vo_sub_opts);
     struct m_obj_settings *vo_list = opts->video_driver_list;
     struct vo *vo = NULL;
@@ -940,9 +947,9 @@ static bool render_frame(struct vo *vo)
         in->hasframe_rendered = true;
         int64_t prev_drop_count = vo->in->drop_count;
         // Can the core queue new video now? Non-display-sync uses a separate
-        // timer instead.
-        bool can_queue =
-            !in->frame_queued && in->current_frame->num_vsyncs < 1 && use_vsync;
+        // timer instead, but possibly benefits from preparing a frame early.
+        bool can_queue = !in->frame_queued &&
+            (in->current_frame->num_vsyncs < 1 || !use_vsync);
         pthread_mutex_unlock(&in->lock);
 
         if (can_queue)
