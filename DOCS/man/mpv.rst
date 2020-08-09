@@ -693,11 +693,209 @@ or at runtime with the ``apply-profile <name>`` command.
         # you can also include other profiles
         profile=big-cache
 
+Runtime profiles
+----------------
 
-Auto profiles
--------------
+Profiles can be set at runtime with ``apply-profile`` command. Since this
+operation is "destructive" (every item in a profile is simply set as an
+option, overwriting the previous value), you can't just enable and disable
+profiles again.
 
-Some profiles are loaded automatically. The following example demonstrates this:
+As a partial remedy, there is a way to make profiles save old option values
+before overwriting them with the profile values, and then restoring the old
+values at a later point using ``apply-profile <profile-name> restore``.
+
+This can be enabled with the ``profile-restore`` option, which takes one of
+the following options:
+
+    ``default``
+        Does nothing, and nothing can be restored (default).
+
+    ``copy``
+        When applying a profile, copy the old values of all profile options to a
+        backup before setting them from the profile. These options are reset to
+        their old values using the backup when restoring.
+
+        Every profile has its own list of backed up values. If the backup
+        already exists (e.g. if ``apply-profile name`` was called more than
+        once in a row), the existing backup is no changed. The restore operation
+        will remove the backup.
+
+        It's important to know that restoring does not "undo" setting an option,
+        but simply copies the old option value. Consider for example ``vf-add``,
+        appends an entry to ``vf``. This mechanism will simply copy the entire
+        ``vf`` list, and does _not_ execute the inverse of ``vf-add`` (that
+        would be ``vf-remove``) on restoring.
+
+        Note that if a profile contains recursive profiles (via the ``profile``
+        option), the options in these recursive profiles are treated as if they
+        were part of this profile. The referenced profile's backup list is not
+        used when creating or using the backup. Restoring a profile does not
+        restore referenced profiles, only the options of referenced profiles (as
+        if they were part of the main profile).
+
+    ``copy-equal``
+        Similar to ``copy``, but restore an option only if it has the same value
+        as the value effectively set by the profile. This tries to deal with
+        the situation when the user does not want the option to be reset after
+        interactively changing it.
+
+.. admonition:: Example
+
+    ::
+
+        [something]
+        profile-restore=copy-equal
+        vf-add=rotate=90
+
+    Then running these commands will result in behavior as commented:
+
+    ::
+
+        set vf vflip
+        apply-profile something
+        vf-add=hflip
+        apply-profile something
+        # vf == vflip,rotate=90,hflip,rotate=90
+        apply-profile something restore
+        # vf == vflip
+
+Conditional auto profiles
+-------------------------
+
+Profiles which have the ``profile-cond`` option set are applied automatically
+if the associated condition matches (unless auto profiles are disabled). The
+option takes a string, which is interpreted as Lua condition. If evaluating the
+expression returns true, the profile is applied, if it returns false, it is
+ignored. This Lua code execution is not sandboxed.
+
+Any variables in condition expressions can reference properties. If an
+identifier is not already by defined by Lua or mpv, it is interpreted as
+property. For example, ``pause`` would return the current pause status. If the
+variable name contains any ``_`` characters, they are turned into ``-``. For
+example, ``playback_time`` would return the property ``playback-time``.
+
+A more robust way to access properties is using ``p.property_name`` or
+``get("property-name", default_value)``. The automatic variable to property
+magic will break if a new identifier with the same name is introduced (for
+example, if a function named ``pause()`` were added, ``pause`` would return a
+function value instead of the value of the ``pause`` property).
+
+Note that if a property is not available, it will return ``nil``, which can
+cause errors if used in expressions. These are logged in verbose mode, and the
+expression is considered to be false.
+
+Whenever a property referenced by a profile condition changes, the condition
+is re-evaluated. If the return value of the condition changes from false or
+error to true, the profile is applied.
+
+This mechanism tries to "unapply" profiles once the condition changes from true
+to false. If you want to use this, you need to set ``profile-restore`` for the
+profile. Another possibility it to create another profile with an inverse
+condition to undo the other profile.
+
+Recursive profiles can be used. But it is discouraged to reference other
+conditional profiles in a conditional profile, since this can lead to tricky
+and unintuitive behavior.
+
+.. admonition:: Example
+
+    Make only HD video look funny:
+
+    ::
+
+        [something]
+        profile-desc=HD video sucks
+        profile-cond=width >= 1280
+        hue=-50
+
+    If you want the profile to be reverted if the condition goes to false again,
+    you can set ``profile-restore``:
+
+    ::
+
+        [something]
+        profile-desc=Mess up video when entering fullscreen
+        profile-cond=fullscreen
+        profile-restore=copy
+        vf-add=rotate=90
+
+    This appends the ``rotate`` filter to the video filter chain when entering
+    fullscreen. When leaving fullscreen, the ``vf`` option is set to the value
+    it had before entering fullscreen. Note that this would also remove any
+    other filters that were added during fullscreen mode by the user. Avoiding
+    this is trickier, and could for example be solved by adding a second profile
+    with an inverse condition and operation:
+
+    ::
+
+        [something]
+        profile-cond=fullscreen
+        vf-add=@rot:rotate=90
+
+        [something-inv]
+        profile-cond=not fullscreen
+        vf-remove=@rot
+
+.. warning::
+
+    Every time an involved property changes, the condition is evaluated again.
+    If your condition uses ``p.playback_time`` for example, the condition is
+    re-evaluated approximately on every video frame. This is probably slow.
+
+This feature is managed by an internal Lua script. Conditions are executed as
+Lua code within this script. Its environment contains at least the following
+things:
+
+``(function environment table)``
+    Every Lua function has an environment table. This is used for identifier
+    access. There is no named Lua symbol for it; it is implicit.
+
+    The environment does "magic" accesses to mpv properties. If an identifier
+    is not already defined in ``_G``, it retrieves the mpv property of the same
+    name. Any occurrences of ``_`` in the name are replaced with ``-`` before
+    reading the property. The returned value is as retrieved by
+    ``mp.get_property_native(name)``. Internally, a cache of property values,
+    updated by observing the property is used instead, so properties that are
+    not observable will be stuck at the initial value forever.
+
+    If you want to access properties, that actually contain ``_`` in the name,
+    use ``get()`` (which does not perform transliteration).
+
+    Internally, the environment table has a ``__index`` meta method set, which
+    performs the access logic.
+
+``p``
+    A "magic" table similar to the environment table. Unlike the latter, this
+    does not prefer accessing variables defined in ``_G`` - it always accesses
+    properties.
+
+``get(name [, def])``
+    Read a property and return its value. If the property value is ``nil`` (e.g.
+    if the property does not exist), ``def`` is returned.
+
+    This is superficially similar to ``mp.get_property_native(name)``. An
+    important difference is that this accesses the property cache, and enables
+    the change detection logic (which is essential to the dynamic runtime
+    behavior of auto profiles). Also, it does not return an error value as
+    second return value.
+
+    The "magic" tables mentioned above use this function as backend. It does not
+    perform the ``_`` transliteration.
+
+In addition, the same environment as in a blank mpv Lua script is present. For
+example, ``math`` is defined and gives access to the Lua standard math library.
+
+.. warning::
+
+    This feature is subject to change indefinitely. You might be forced to
+    adjust your profiles on mpv updates.
+
+Legacy auto profiles
+--------------------
+
+Some profiles are loaded automatically using a legacy mechanism. The following
+example demonstrates this:
 
 .. admonition:: Auto profile loading
 
@@ -705,14 +903,15 @@ Some profiles are loaded automatically. The following example demonstrates this:
 
         [extension.mkv]
         profile-desc="profile for .mkv files"
-        vf=flip
+        vf=vflip
 
 The profile name follows the schema ``type.name``, where type can be
 ``protocol`` for the input/output protocol in use (see ``--list-protocols``),
 and ``extension`` for the extension of the path of the currently played file
 (*not* the file format).
 
-This feature is very limited, and there are no other auto profiles.
+This feature is very limited, and is considered soft-deprecated. Use conditional
+auto profiles.
 
 Using mpv from other programs or scripts
 ========================================
